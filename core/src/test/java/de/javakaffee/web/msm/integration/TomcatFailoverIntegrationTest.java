@@ -43,7 +43,7 @@ import com.thimbleware.jmemcached.MemCacheDaemon;
 
 import de.javakaffee.web.msm.MemcachedBackupSession;
 import de.javakaffee.web.msm.MemcachedNodesManager;
-import de.javakaffee.web.msm.MemcachedNodesManager.MemcachedClientCallback;
+import de.javakaffee.web.msm.MemcachedNodesManager.StorageClientCallback;
 import de.javakaffee.web.msm.MemcachedSessionService.SessionManager;
 import de.javakaffee.web.msm.SessionIdFormat;
 import de.javakaffee.web.msm.Statistics;
@@ -52,6 +52,7 @@ import de.javakaffee.web.msm.integration.TestUtils.LoginType;
 import de.javakaffee.web.msm.integration.TestUtils.RecordingSessionActivationListener;
 import de.javakaffee.web.msm.integration.TestUtils.Response;
 import de.javakaffee.web.msm.integration.TestUtils.SessionAffinityMode;
+import de.javakaffee.web.msm.storage.MemcachedStorageClient.ByteArrayTranscoder;
 
 /**
  * Integration test testing tomcat failover (tomcats failing).
@@ -66,12 +67,13 @@ public abstract class TomcatFailoverIntegrationTest {
     private static final String GROUP_WITHOUT_NODE_ID = "withoutNodeId";
 
     private MemCacheDaemon<?> _daemon;
+    private MemCacheDaemon<?> _daemon2 = null;
     private MemcachedClient _client;
 
-    private final MemcachedClientCallback _memcachedClientCallback = new MemcachedClientCallback() {
+    private final StorageClientCallback _storageClientCallback = new StorageClientCallback() {
         @Override
-        public Object get(final String key) {
-            return _client.get(key);
+        public byte[] get(final String key) {
+            return _client.get(key, ByteArrayTranscoder.INSTANCE);
         }
     };
 
@@ -110,7 +112,7 @@ public abstract class TomcatFailoverIntegrationTest {
             throw e;
         }
 
-        final MemcachedNodesManager nodesManager = MemcachedNodesManager.createFor(_memcachedNodes, null, null, _memcachedClientCallback);
+        final MemcachedNodesManager nodesManager = MemcachedNodesManager.createFor(_memcachedNodes, null, null, _storageClientCallback);
         final ConnectionFactory cf = nodesManager.isEncodeNodeIdInSessionId()
             ? new SuffixLocatorConnectionFactory( nodesManager, nodesManager.getSessionIdFormat(), Statistics.create(), 1000, 1000 )
             : new DefaultConnectionFactory();
@@ -134,10 +136,12 @@ public abstract class TomcatFailoverIntegrationTest {
     @AfterMethod
     public void tearDown() throws Exception {
         _client.shutdown();
-        _daemon.stop();
+        _httpClient.getConnectionManager().shutdown();
         _tomcat1.stop();
         _tomcat2.stop();
-        _httpClient.getConnectionManager().shutdown();
+        _daemon.stop();
+        if(_daemon2 != null)
+            _daemon2.stop();
     }
 
     /**
@@ -433,7 +437,7 @@ public abstract class TomcatFailoverIntegrationTest {
     @Test( enabled = true )
     public void testTomcatFailoverMovesSessionToNonFailoverNode() throws Exception {
 
-        final MemCacheDaemon<?> daemon2 = startMemcached(MEMCACHED_PORT + 1);
+        _daemon2 = startMemcached(MEMCACHED_PORT + 1);
         final String memcachedNodes = _memcachedNodes + "," + "n2:localhost:" + (MEMCACHED_PORT + 1);
 
         _tomcat1.getService().setMemcachedNodes(memcachedNodes);
@@ -448,7 +452,7 @@ public abstract class TomcatFailoverIntegrationTest {
         final String sessionId1 = post( _httpClient, TC_PORT_1, null, key, value ).getSessionId();
         assertEquals( format.extractMemcachedId( sessionId1 ), "n2" );
         assertEquals(_daemon.getCache().getCurrentItems(), 0);
-        assertEquals(daemon2.getCache().getCurrentItems(), 1);
+        assertEquals(_daemon2.getCache().getCurrentItems(), 1);
 
         // failover simulation, just request the session from tomcat2
         final Response response = get( _httpClient, TC_PORT_2, sessionId1 );
@@ -462,8 +466,6 @@ public abstract class TomcatFailoverIntegrationTest {
          */
         final String actualValue = response.get( key );
         assertEquals( value, actualValue );
-
-        Thread.sleep( 10 );
 
     }
 

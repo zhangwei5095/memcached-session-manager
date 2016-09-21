@@ -29,13 +29,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-import net.spy.memcached.MemcachedClient;
-
-import org.apache.catalina.Session;
-
 import de.javakaffee.web.msm.BackupSessionService.SimpleFuture;
 import de.javakaffee.web.msm.BackupSessionTask.BackupResult;
-import de.javakaffee.web.msm.MemcachedNodesManager.MemcachedClientCallback;
+import de.javakaffee.web.msm.MemcachedNodesManager.StorageClientCallback;
+import de.javakaffee.web.msm.storage.StorageClient;
 
 /**
  * This {@link MemcachedSessionService} can be used for debugging session
@@ -66,16 +63,16 @@ public class DummyMemcachedSessionService<T extends MemcachedSessionService.Sess
     }
 
     @Override
-    protected MemcachedClient createMemcachedClient( final MemcachedNodesManager memcachedNodesManager,
-            final Statistics statistics ) {
+    protected StorageClient createStorageClient(final MemcachedNodesManager memcachedNodesManager,
+                                                final Statistics statistics ) {
         return null;
     }
 
     @Override
-    protected MemcachedClientCallback createMemcachedClientCallback() {
-    	return new MemcachedClientCallback() {
+    protected StorageClientCallback createStorageClientCallback() {
+    	return new StorageClientCallback() {
 			@Override
-			public Object get(final String key) {
+			public byte[] get(final String key) {
 				return null;
 			}
 		};
@@ -96,7 +93,17 @@ public class DummyMemcachedSessionService<T extends MemcachedSessionService.Sess
      *            specifies, if the session id was changed due to a memcached failover or tomcat failover.
      * @return the {@link BackupResultStatus}
      */
-    public Future<BackupResult> backupSession( final Session session, final boolean sessionIdChanged, final String requestURI ) {
+    public Future<BackupResult> backupSession( final String sessionId, final boolean sessionIdChanged, final String requestId ) {
+
+        final MemcachedBackupSession session = _manager.getSessionInternal( sessionId );
+        
+        if ( session == null ) {
+            if(_log.isDebugEnabled())
+                _log.debug( "No session found in session map for " + sessionId );
+          
+            return new SimpleFuture<BackupResult>( BackupResult.SKIPPED );
+        }
+        
         _log.info( "Serializing session data for session " + session.getIdInternal() );
         final long startSerialization = System.currentTimeMillis();
         final byte[] data = _transcoderService.serializeAttributes( (MemcachedBackupSession) session, ((MemcachedBackupSession) session).getAttributesFiltered() );

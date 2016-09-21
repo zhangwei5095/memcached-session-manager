@@ -24,8 +24,8 @@ import static de.javakaffee.web.msm.Statistics.StatsType.MEMCACHED_UPDATE;
 import static de.javakaffee.web.msm.Statistics.StatsType.RELEASE_LOCK;
 
 import java.util.Arrays;
-import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -35,12 +35,11 @@ import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
-import net.spy.memcached.MemcachedClient;
-
 import org.apache.juli.logging.Log;
 import org.apache.juli.logging.LogFactory;
 
 import de.javakaffee.web.msm.BackupSessionTask.BackupResult;
+import de.javakaffee.web.msm.storage.StorageClient;
 
 /**
  * Stores the provided session in memcached if the session was modified
@@ -57,29 +56,29 @@ public class BackupSessionTask implements Callable<BackupResult> {
     private final TranscoderService _transcoderService;
     private final boolean _sessionBackupAsync;
     private final int _sessionBackupTimeout;
-    private final MemcachedClient _memcached;
+    private final StorageClient _storage;
     private final MemcachedNodesManager _memcachedNodesManager;
     private final Statistics _statistics;
 
     /**
      * @param session
      *            the session to save
-     * @param sessionBackupAsync
-     * @param sessionBackupTimeout
-     * @param memcached
-     * @param force
+     * @param sessionIdChanged
      *            specifies, if the session needs to be saved by all means, e.g.
      *            as it has to be relocated to another memcached
      *            node (the session id had been changed before in this case).
+     * @param sessionBackupAsync
+     * @param sessionBackupTimeout
+     * @param storage
      * @param memcachedNodesManager
-     * @param failoverNodeIds
+     * @param statistics
      */
     public BackupSessionTask( final MemcachedBackupSession session,
             final boolean sessionIdChanged,
             final TranscoderService transcoderService,
             final boolean sessionBackupAsync,
             final int sessionBackupTimeout,
-            final MemcachedClient memcached,
+            final StorageClient storage,
             final MemcachedNodesManager memcachedNodesManager,
             final Statistics statistics ) {
         _session = session;
@@ -87,7 +86,7 @@ public class BackupSessionTask implements Callable<BackupResult> {
         _transcoderService = transcoderService;
         _sessionBackupAsync = sessionBackupAsync;
         _sessionBackupTimeout = sessionBackupTimeout;
-        _memcached = memcached;
+        _storage = storage;
         _memcachedNodesManager = memcachedNodesManager;
         _statistics = statistics;
     }
@@ -106,7 +105,7 @@ public class BackupSessionTask implements Callable<BackupResult> {
 
             final long startBackup = System.currentTimeMillis();
 
-            final Map<String, Object> attributes = _session.getAttributesFiltered();
+            final ConcurrentMap<String, Object> attributes = _session.getAttributesFiltered();
             final byte[] attributesData = serializeAttributes( _session, attributes );
             final int hashCode = Arrays.hashCode( attributesData );
             final BackupResult result;
@@ -148,7 +147,11 @@ public class BackupSessionTask implements Callable<BackupResult> {
 
             return result;
 
-        } finally {
+        } catch (Exception e) {
+            _log.warn("FAILED for session id " + _session.getId(), e);
+            throw e;
+        }
+        finally {
             _session.setBackupRunning( false );
             releaseLock();
         }
@@ -162,7 +165,7 @@ public class BackupSessionTask implements Callable<BackupResult> {
                     _log.debug( "Releasing lock for session " + _session.getIdInternal() );
                 }
                 final long start = System.currentTimeMillis();
-                _memcached.delete( _memcachedNodesManager.getSessionIdFormat().createLockName( _session.getIdInternal() ) ).get();
+                _storage.delete( _memcachedNodesManager.getSessionIdFormat().createLockName( _session.getIdInternal() ) ).get();
                 _statistics.registerSince( RELEASE_LOCK, start );
                 _session.releaseLock();
             } catch( final Exception e ) {
@@ -171,7 +174,7 @@ public class BackupSessionTask implements Callable<BackupResult> {
         }
     }
 
-    private byte[] serializeAttributes( final MemcachedBackupSession session, final Map<String, Object> attributes ) {
+    private byte[] serializeAttributes( final MemcachedBackupSession session, final ConcurrentMap<String, Object> attributes ) {
         final long start = System.currentTimeMillis();
         final byte[] attributesData = _transcoderService.serializeAttributes( session, attributes );
         _statistics.registerSince( ATTRIBUTES_SERIALIZATION, start );
@@ -225,7 +228,7 @@ public class BackupSessionTask implements Callable<BackupResult> {
         final int expirationTime = session.getMemcachedExpirationTimeToSet();
         final long start = System.currentTimeMillis();
         try {
-            final Future<Boolean> future = _memcached.set(
+            final Future<Boolean> future = _storage.set(
                     _memcachedNodesManager.getStorageKeyFormat().format(session.getId()),
                     toMemcachedExpiration(expirationTime), data );
             if ( !_sessionBackupAsync ) {

@@ -56,7 +56,7 @@ import com.thimbleware.jmemcached.MemCacheDaemon;
 
 import de.javakaffee.web.msm.LockingStrategy.LockingMode;
 import de.javakaffee.web.msm.MemcachedNodesManager;
-import de.javakaffee.web.msm.MemcachedNodesManager.MemcachedClientCallback;
+import de.javakaffee.web.msm.MemcachedNodesManager.StorageClientCallback;
 import de.javakaffee.web.msm.MemcachedSessionService.SessionManager;
 import de.javakaffee.web.msm.NodeIdList;
 import de.javakaffee.web.msm.SessionIdFormat;
@@ -65,6 +65,8 @@ import de.javakaffee.web.msm.SuffixLocatorConnectionFactory;
 import de.javakaffee.web.msm.integration.TestUtils.LoginType;
 import de.javakaffee.web.msm.integration.TestUtils.Response;
 import de.javakaffee.web.msm.integration.TestUtils.SessionTrackingMode;
+import de.javakaffee.web.msm.storage.MemcachedStorageClient.ByteArrayTranscoder;
+
 import edu.umd.cs.findbugs.annotations.SuppressWarnings;
 /**
  * Integration test testing non-sticky sessions.
@@ -80,10 +82,10 @@ public abstract class NonStickySessionsIntegrationTest {
     private MemCacheDaemon<?> _daemon3;
     private MemcachedClient _client;
 
-    private final MemcachedClientCallback _memcachedClientCallback = new MemcachedClientCallback() {
+    private final StorageClientCallback _storageClientCallback = new StorageClientCallback() {
         @Override
-        public Object get(final String key) {
-            return _client.get(key);
+        public byte[] get(final String key) {
+            return _client.get(key, ByteArrayTranscoder.INSTANCE);
         }
     };
 
@@ -124,7 +126,7 @@ public abstract class NonStickySessionsIntegrationTest {
             throw e;
         }
 
-        final MemcachedNodesManager nodesManager = MemcachedNodesManager.createFor(MEMCACHED_NODES, null, null, _memcachedClientCallback);
+        final MemcachedNodesManager nodesManager = MemcachedNodesManager.createFor(MEMCACHED_NODES, null, null, _storageClientCallback);
         _client =
                 new MemcachedClient( new SuffixLocatorConnectionFactory( nodesManager, nodesManager.getSessionIdFormat(), Statistics.create(), 1000, 1000 ),
                         Arrays.asList( address1, address2 ) );
@@ -417,7 +419,7 @@ public abstract class NonStickySessionsIntegrationTest {
      * Tests that for auto locking mode requests that are found to be readonly don't lock
      * the session
      */
-    @Test
+    @Test( enabled = true )
     public void testReadOnlyRequestsDontLockSessionForAutoLocking() throws IOException, InterruptedException, HttpException, ExecutionException {
 
         setLockingMode( LockingMode.AUTO, null );
@@ -480,7 +482,7 @@ public abstract class NonStickySessionsIntegrationTest {
      * Tests that for uriPattern locking mode requests that don't match the pattern the
      * session is not locked.
      */
-    @Test
+    @Test( enabled = true )
     public void testRequestsDontLockSessionForNotMatchingUriPattern() throws IOException, InterruptedException, HttpException, ExecutionException {
 
         final String pathToLock = "/locksession";
@@ -624,7 +626,7 @@ public abstract class NonStickySessionsIntegrationTest {
         manager.setMemcachedNodes(memcachedNodes);
         manager.getMemcachedSessionService().setSessionBackupAsync(false);
 
-        waitForReconnect(manager.getMemcachedSessionService().getMemcached(), 3, 1000);
+        waitForReconnect(manager.getMemcachedSessionService().getStorageClient(), 3, 1000);
 
         final NodeIdList nodeIdList = NodeIdList.create(NODE_ID_1, NODE_ID_2, NODE_ID_3);
         final Map<String, MemCacheDaemon<?>> memcachedsByNodeId = new HashMap<String, MemCacheDaemon<?>>();
@@ -696,7 +698,7 @@ public abstract class NonStickySessionsIntegrationTest {
         manager.setMemcachedNodes(memcachedNodes);
         manager.getMemcachedSessionService().setSessionBackupAsync(false);
 
-        waitForReconnect(manager.getMemcachedSessionService().getMemcached(), 3, 1000);
+        waitForReconnect(manager.getMemcachedSessionService().getStorageClient(), 3, 1000);
 
         final NodeIdList nodeIdList = NodeIdList.create(NODE_ID_1, NODE_ID_2, NODE_ID_3);
         final Map<String, MemCacheDaemon<?>> memcachedsByNodeId = new HashMap<String, MemCacheDaemon<?>>();
@@ -783,9 +785,9 @@ public abstract class NonStickySessionsIntegrationTest {
 	}
 
     @Test( enabled = true )
-    public void testSessionNotLoadedForReadonlyRequest() throws IOException, HttpException, InterruptedException {
+    public void testSessionNotLoadedForNoSessionAccess() throws IOException, HttpException, InterruptedException {
         _tomcat1.getManager().setMemcachedNodes( NODE_ID_1 + ":localhost:" + MEMCACHED_PORT_1 );
-        waitForReconnect(_tomcat1.getService().getMemcached(), 1, 1000);
+        waitForReconnect(_tomcat1.getService().getStorageClient(), 1, 1000);
 
         final String sessionId1 = post( _httpClient, TC_PORT_1, null, "foo", "bar" ).getSessionId();
         assertNotNull( sessionId1 );
@@ -800,9 +802,19 @@ public abstract class NonStickySessionsIntegrationTest {
         get( _httpClient, TC_PORT_1, PATH_NO_SESSION_ACCESS, sessionId1 );
 
         assertWaitingWithProxy(equalTo(3), 1000, _daemon1.getCache()).getSetCmds();
-        assertEquals( _daemon1.getCache().getGetHits(), 1 );
+
+        // For TC7 the session is looked up by AuthenticatorBase.invoke(AuthenticatorBase.java:430) (TC 7.0.67) which seems
+        // to be installed and always check the user principal - therefore we have 2 hits for the session and the validity info.
+        // And we want to allow context level valves to access the session (issue #286), therefore we load the session even
+        // if our context valve has not been passed (i.e. findSession is not directly triggered from the webapp).
+        //
+        // For TC{6,8} there's no call from AuthenticatorBase, so there's only 1 hit (validity info)
+        assertEquals( _daemon1.getCache().getGetHits(), getExpectedHitsForNoSessionAccess());
     }
 
+    protected int getExpectedHitsForNoSessionAccess() {
+        return 1;
+    }
 
     /**
      * Ignored resources (requests matching uriIgnorePattern) should neither load the session
@@ -922,6 +934,7 @@ public abstract class NonStickySessionsIntegrationTest {
         // and should not update the session in memcached.
         final Response tc1Response2 = get(_httpClient, TC_PORT_1, "/pixel.gif", sessionId);
         assertNull(tc1Response2.getResponseSessionId());
+        assertEquals(tc1Response2.getStatusCode(), 200);
 
         // load session + validity info for pixel.gif
         assertEquals( _daemon1.getCache().getGetHits(), 8 );
@@ -1007,8 +1020,8 @@ public abstract class NonStickySessionsIntegrationTest {
         _tomcat1.setChangeSessionIdOnAuth( false );
         _tomcat2.setChangeSessionIdOnAuth( false );
 
-        waitForReconnect(_tomcat1.getService().getMemcached(), 1, 1000);
-        waitForReconnect(_tomcat2.getService().getMemcached(), 1, 1000);
+        waitForReconnect(_tomcat1.getService().getStorageClient(), 1, 1000);
+        waitForReconnect(_tomcat2.getService().getStorageClient(), 1, 1000);
 
         final Response response1 = get( _httpClient, TC_PORT_1, null );
         final String sessionId = response1.getSessionId();

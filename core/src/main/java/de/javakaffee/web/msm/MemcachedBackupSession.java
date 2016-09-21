@@ -16,12 +16,16 @@
  */
 package de.javakaffee.web.msm;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.security.Principal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Pattern;
 
 import org.apache.catalina.Manager;
@@ -49,6 +53,73 @@ import de.javakaffee.web.msm.MemcachedSessionService.SessionManager;
 public class MemcachedBackupSession extends StandardSession {
 
     private static final long serialVersionUID = 1L;
+
+    // Indirection for this.attributes is needed for tomcat 8 support.
+    // While this class (today) is compiled against tomcat 7 where attributes is declared as Map,
+    // in later versions of tomcat 8 this was changed to ConcurrentMap. In consequence, accessing
+    // this.attributes results in "java.lang.NoSuchFieldError: attributes".
+    private static final AttributeAccessor attributeAccessor;
+
+    static {
+        try {
+            final Field attributesField = StandardSession.class.getDeclaredField("attributes");
+            attributeAccessor = attributesField.getType() == ConcurrentMap.class
+                    ? new AttributeAccessor() {
+                        { attributesField.setAccessible(true); }
+                        @Override
+                        public ConcurrentMap<String, Object> get(MemcachedBackupSession session) {
+                            try {
+                                return (ConcurrentMap<String, Object>)attributesField.get(session);
+                            } catch (IllegalAccessException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }
+                        @Override
+                        public void set(MemcachedBackupSession session, ConcurrentMap<String, Object> attributes) {
+                            try {
+                                attributesField.set(session, attributes);
+                            } catch (IllegalAccessException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }
+                    }
+                    : new AttributeAccessor() {
+                        @Override
+                        public ConcurrentMap<String, Object> get(MemcachedBackupSession session) {
+                            return (ConcurrentMap<String, Object>) session.attributes;
+                        }
+                        @Override
+                        public void set(MemcachedBackupSession session, ConcurrentMap<String, Object> attributes) {
+                            session.attributes = attributes;
+                        }
+                    };
+        } catch (NoSuchFieldException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    // Cached one parameter StandardSession#exclude(String) method which was deprecated and removed in newer
+    // Tomcat versions (see CVE-2016-0714). It is called via reflection when it is present (and the two
+    // parameter variant is not) to maintain compatibility with older Tomcat versions.
+    private static final Method legacySessionExcludeMethod;
+
+    static {
+        try {
+            Method method;
+            try {
+                // StandardSession#exclude(String, Object) found in newer Tomcat versions is preferred
+                StandardSession.class.getDeclaredMethod("exclude", String.class, Object.class);
+                method = null;
+            } catch (NoSuchMethodException e) {
+                // Try to fallback to StandardSession#exclude(String) for compatibility reasons
+                method = StandardSession.class.getDeclaredMethod("exclude", String.class);
+            }
+            legacySessionExcludeMethod = method;
+        } catch (NoSuchMethodException e) {
+            throw new RuntimeException("Neither StandardSession#exclude(String) nor " +
+                    "StandardSession#exclude(String, Object) method was found.", e);
+        }
+    }
 
     /*
      * The hash code of the serialized byte[] of this session that is
@@ -120,6 +191,11 @@ public class MemcachedBackupSession extends StandardSession {
     public MemcachedBackupSession( final SessionManager manager ) {
         super( manager );
         _refCount = new HashSet<Long>();
+    }
+
+    @Override
+    public SessionManager getManager() {
+        return (SessionManager) super.getManager();
     }
 
     /**
@@ -221,7 +297,7 @@ public class MemcachedBackupSession extends StandardSession {
          */
         final int timeIdle = Math.round( (float)timeIdleInMillis / 1000L );
         final int expirationTime = getMaxInactiveInterval() - timeIdle;
-        final int processExpiresOffset = ((SessionManager)manager).getProcessExpiresFrequency() * manager.getContainer().getBackgroundProcessorDelay();
+        final int processExpiresOffset = getManager().getProcessExpiresFrequency() * getManager().getContext().getBackgroundProcessorDelay();
         return expirationTime + processExpiresOffset;
     }
 
@@ -499,8 +575,8 @@ public class MemcachedBackupSession extends StandardSession {
     }
 
     @SuppressWarnings( "unchecked" )
-    public Map<String, Object> getAttributesInternal() {
-        return this.attributes;
+    public ConcurrentMap<String, Object> getAttributesInternal() {
+        return attributeAccessor.get(this);
     }
 
     /**
@@ -508,16 +584,17 @@ public class MemcachedBackupSession extends StandardSession {
      *
      * @return the filtered attribute map that only includes attributes that shall be stored in memcached.
      */
-    public Map<String, Object> getAttributesFiltered() {
+    public ConcurrentMap<String, Object> getAttributesFiltered() {
         if ( this.manager == null ) {
             throw new IllegalStateException( "There's no manager set." );
         }
         final Pattern pattern = ((SessionManager)manager).getMemcachedSessionService().getSessionAttributePattern();
+        final ConcurrentMap<String, Object> attributes = getAttributesInternal();
         if ( pattern == null ) {
-            return this.attributes;
+            return attributes;
         }
-        final Map<String, Object> result = new ConcurrentHashMap<String, Object>( this.attributes.size() );
-        for ( final Map.Entry<String, Object> entry: this.attributes.entrySet() ) {
+        final ConcurrentMap<String, Object> result = new ConcurrentHashMap<String, Object>( attributes.size() );
+        for ( final Map.Entry<String, Object> entry: attributes.entrySet() ) {
             if ( pattern.matcher(entry.getKey()).matches() ) {
                 result.put( entry.getKey(), entry.getValue() );
             }
@@ -525,8 +602,8 @@ public class MemcachedBackupSession extends StandardSession {
         return result;
     }
 
-    void setAttributesInternal( final Map<String, Object> attributes ) {
-        this.attributes = attributes;
+    void setAttributesInternal( final ConcurrentMap<String, Object> attributes ) {
+        attributeAccessor.set(this, attributes);
     }
 
     /**
@@ -541,8 +618,21 @@ public class MemcachedBackupSession extends StandardSession {
      * {@inheritDoc}
      */
     @Override
-    protected boolean exclude( final String name ) {
-        return super.exclude( name );
+    protected boolean exclude( final String name, Object value ) {
+        try {
+            if (legacySessionExcludeMethod != null) {
+                return (Boolean) legacySessionExcludeMethod.invoke(this, name);
+            } else {
+                return super.exclude(name, value);
+            }
+        } catch (InvocationTargetException e) {
+            if (e.getCause() instanceof RuntimeException) {
+                throw (RuntimeException) e.getCause();
+            }
+            throw new RuntimeException("Failed to invoke StandardSession#exclude(String) method.", e);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException("Can not access StandardSession#exclude(String) method.", e);
+        }
     }
 
     /**
@@ -703,6 +793,11 @@ public class MemcachedBackupSession extends StandardSession {
     public synchronized int releaseReference() {
         _refCount.remove(Thread.currentThread().getId());
         return _refCount.size();
+    }
+
+    static abstract interface AttributeAccessor {
+        ConcurrentMap<String, Object> get(MemcachedBackupSession session);
+        void set(MemcachedBackupSession session, ConcurrentMap<String, Object> attributes);
     }
 
 }

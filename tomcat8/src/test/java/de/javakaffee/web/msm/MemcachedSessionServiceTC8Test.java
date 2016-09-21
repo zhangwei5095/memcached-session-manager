@@ -16,8 +16,10 @@
  */
 package de.javakaffee.web.msm;
 
+import de.javakaffee.web.msm.storage.MemcachedStorageClient;
 import net.spy.memcached.MemcachedClient;
 
+import org.apache.catalina.Context;
 import org.apache.catalina.LifecycleException;
 import org.testng.annotations.Test;
 
@@ -33,13 +35,15 @@ import de.javakaffee.web.msm.MemcachedSessionService.SessionManager;
 public class MemcachedSessionServiceTC8Test extends MemcachedSessionServiceTest {
 
     @Override
-    protected SessionManager createSessionManager() {
-        return new MemcachedBackupSessionManager();
+    protected SessionManager createSessionManager(Context context) {
+        MemcachedBackupSessionManager manager = new MemcachedBackupSessionManager();
+        manager.setContext(context);
+        return manager;
     }
 
     @Override
     protected void startInternal( final SessionManager manager, final MemcachedClient memcachedMock ) throws LifecycleException {
-        manager.getMemcachedSessionService().setMemcachedClient(memcachedMock);
+        manager.getMemcachedSessionService().setStorageClient(new MemcachedStorageClient(memcachedMock));
         ((MemcachedBackupSessionManager)manager).start();
     }
 

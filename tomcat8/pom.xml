@@ -3,7 +3,7 @@
 	<parent>
 		<groupId>de.javakaffee.msm</groupId>
 		<artifactId>memcached-session-manager-project</artifactId>
-		<version>1.8.2-SNAPSHOT</version>
+		<version>2.0.1-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>memcached-session-manager-tc8</artifactId>
@@ -12,7 +12,7 @@
 	<description>The msm tomcat8 specific implementation.</description>
 
 	<properties>
-		<tomcat-version>8.0.5</tomcat-version>
+		<tomcat-version>${tomcat8-version}</tomcat-version>
 	</properties>
 
 	<dependencies>
@@ -27,6 +27,13 @@
 			<groupId>org.apache.tomcat</groupId>
 			<artifactId>tomcat-servlet-api</artifactId>
 			<version>${tomcat-version}</version>
+			<scope>provided</scope>
+		</dependency>
+		<!-- JASPIC -->
+		<dependency>
+			<groupId>javax.security.auth.message</groupId>
+			<artifactId>javax.security.auth.message-api</artifactId>
+			<version>1.1</version>
 			<scope>provided</scope>
 		</dependency>
 		<dependency>

@@ -23,6 +23,7 @@ import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.io.IOException;
 import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.lang.reflect.Method;
 import java.security.Principal;
 import java.util.Map;
@@ -32,7 +33,7 @@ import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
-import net.spy.memcached.MemcachedClient;
+import de.javakaffee.web.msm.storage.StorageClient;
 
 import org.apache.catalina.Container;
 import org.apache.catalina.Context;
@@ -47,6 +48,7 @@ import org.apache.catalina.connector.Response;
 import org.apache.catalina.deploy.LoginConfig;
 import org.apache.catalina.deploy.SecurityConstraint;
 import org.apache.catalina.ha.session.SerializablePrincipal;
+import org.apache.catalina.realm.GenericPrincipal;
 import org.apache.catalina.session.ManagerBase;
 import org.apache.catalina.session.StandardSession;
 import org.apache.catalina.util.LifecycleSupport;
@@ -83,6 +85,9 @@ public class MemcachedBackupSessionManager extends ManagerBase implements Lifecy
     protected final Log _log = LogFactory.getLog( getClass() );
 
     private final LifecycleSupport _lifecycle = new LifecycleSupport( this );
+
+    /** Can be used to override Context.sessionTimeout (to allow tests to set more fine grained session timeouts) */
+    private Integer _maxInactiveInterval;
 
     private int _maxActiveSessions = -1;
     private int _rejectedSessions;
@@ -122,15 +127,21 @@ public class MemcachedBackupSessionManager extends ManagerBase implements Lifecy
         return NAME;
     }
 
+    @Nonnull
+    @Override
+    public Context getContext() {
+        return (Context) getContainer();
+    }
+
     /**
-     * Initialize this manager. The memcachedClient parameter is there for testing
-     * purposes. If the memcachedClient is provided it's used, otherwise a "real"/new
-     * memcached client is created based on the configuration (like {@link #setMemcachedNodes(String)} etc.).
+     * Initialize this manager. The storageClient parameter is there for testing
+     * purposes. If the storageClient is provided it's used, otherwise a "real"/new
+     * storage client is created based on the configuration (like {@link #setMemcachedNodes(String)} etc.).
      *
-     * @param memcachedClient the memcached client to use, for normal operations this should be <code>null</code>.
+     * @param storageClient the storage client to use, for normal operations this should be <code>null</code>.
      */
-    protected void startInternal( final MemcachedClient memcachedClient ) throws LifecycleException {
-        _msm.setMemcachedClient(memcachedClient);
+    protected void startInternal(final StorageClient storageClient ) throws LifecycleException {
+        _msm.setStorageClient(storageClient);
         _msm.startInternal();
     }
 
@@ -160,7 +171,7 @@ public class MemcachedBackupSessionManager extends ManagerBase implements Lifecy
      * {@inheritDoc}
      */
     @Override
-    public synchronized String generateSessionId() {
+    public String generateSessionId() {
         return _msm.newSessionId( super.generateSessionId() );
     }
 
@@ -249,6 +260,23 @@ public class MemcachedBackupSessionManager extends ManagerBase implements Lifecy
         // so that session backup won't be omitted we must store this event
         super.changeSessionId( session );
         ((MemcachedBackupSession)session).setSessionIdChanged( true );
+    }
+
+    @Override
+    public boolean isMaxInactiveIntervalSet() {
+        return _maxInactiveInterval != null;
+    }
+
+    public int getMaxInactiveInterval() {
+        return _maxInactiveInterval;
+    }
+
+    public void setMaxInactiveInterval(int interval) {
+        Integer oldMaxInactiveInterval = _maxInactiveInterval;
+        _maxInactiveInterval = interval;
+        support.firePropertyChange("maxInactiveInterval",
+                oldMaxInactiveInterval,
+                _maxInactiveInterval);
     }
 
     /**
@@ -726,7 +754,7 @@ public class MemcachedBackupSessionManager extends ManagerBase implements Lifecy
 
     /**
      * Specifies if the session shall be stored asynchronously in memcached as
-     * {@link MemcachedClient#set(String, int, Object)} supports it. If this is
+     * {@link StorageClient#set(String, int, byte[])} supports it. If this is
      * false, the timeout set via {@link #setSessionBackupTimeout(int)} is
      * evaluated. If this is <code>true</code>, the {@link #setBackupThreadCount(int)}
      * is evaluated.
@@ -744,7 +772,7 @@ public class MemcachedBackupSessionManager extends ManagerBase implements Lifecy
 
     /**
      * Specifies if the session shall be stored asynchronously in memcached as
-     * {@link MemcachedClient#set(String, int, Object)} supports it. If this is
+     * {@link StorageClient#set(String, int, byte[])} supports it. If this is
      * false, the timeout from {@link #getSessionBackupTimeout()} is
      * evaluated.
      */
@@ -1055,6 +1083,11 @@ public class MemcachedBackupSessionManager extends ManagerBase implements Lifecy
     }
 
     @Override
+    public void writePrincipal( @Nonnull Principal principal, @Nonnull ObjectOutputStream oos) throws IOException {
+        SerializablePrincipal.writePrincipal((GenericPrincipal) principal, oos );
+    }
+
+    @Override
     public Principal readPrincipal( final ObjectInputStream ois ) throws ClassNotFoundException, IOException {
         return SerializablePrincipal.readPrincipal( ois, getContainer().getRealm() );
     }
@@ -1064,7 +1097,7 @@ public class MemcachedBackupSessionManager extends ManagerBase implements Lifecy
         if(_contextHasFormBasedSecurityConstraint != null) {
             return _contextHasFormBasedSecurityConstraint.booleanValue();
         }
-        final Context context = (Context)getContainer();
+        final Context context = getContext();
         final SecurityConstraint[] constraints = context.findConstraints();
         final LoginConfig loginConfig = context.getLoginConfig();
         _contextHasFormBasedSecurityConstraint = constraints != null && constraints.length > 0

@@ -21,9 +21,9 @@ import static de.javakaffee.web.msm.Statistics.StatsType.RELEASE_LOCK;
 
 import java.util.Collection;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -33,18 +33,17 @@ import java.util.concurrent.TimeoutException;
 
 import javax.annotation.Nonnull;
 
-import net.spy.memcached.MemcachedClient;
-
 import org.apache.catalina.Session;
 import org.apache.juli.logging.Log;
 import org.apache.juli.logging.LogFactory;
 
 import de.javakaffee.web.msm.BackupSessionTask.BackupResult;
+import de.javakaffee.web.msm.storage.StorageClient;
 
 /**
  * This service is responsible for storing sessions memcached. This includes
  * serialization (which is delegated to the {@link TranscoderService}) and
- * the communication with memcached (using a provided {@link MemcachedClient}).
+ * the communication with memcached (using a provided {@link StorageClient}).
  *
  * @author <a href="mailto:martin.grotzke@javakaffee.de">Martin Grotzke</a>
  */
@@ -55,7 +54,7 @@ public class BackupSessionService {
     private final TranscoderService _transcoderService;
     private final boolean _sessionBackupAsync;
     private final int _sessionBackupTimeout;
-    private final MemcachedClient _memcached;
+    private final StorageClient _storage;
     private final MemcachedNodesManager _memcachedNodesManager;
     private final Statistics _statistics;
 
@@ -66,7 +65,7 @@ public class BackupSessionService {
      * @param sessionBackupAsync
      * @param sessionBackupTimeout
      * @param backupThreadCount TODO
-     * @param memcached
+     * @param storage
      * @param memcachedNodesManager
      * @param failoverNodeIds
      */
@@ -74,13 +73,13 @@ public class BackupSessionService {
             final boolean sessionBackupAsync,
             final int sessionBackupTimeout,
             final int backupThreadCount,
-            final MemcachedClient memcached,
+            final StorageClient storage,
             final MemcachedNodesManager memcachedNodesManager,
             final Statistics statistics ) {
         _transcoderService = transcoderService;
         _sessionBackupAsync = sessionBackupAsync;
         _sessionBackupTimeout = sessionBackupTimeout;
-        _memcached = memcached;
+        _storage = storage;
         _memcachedNodesManager = memcachedNodesManager;
         _statistics = statistics;
 
@@ -127,7 +126,7 @@ public class BackupSessionService {
         session.setExpirationUpdateRunning( true );
         session.setLastBackupTime( System.currentTimeMillis() );
         try {
-            final Map<String, Object> attributes = session.getAttributesFiltered();
+            final ConcurrentMap<String, Object> attributes = session.getAttributesFiltered();
             final byte[] attributesData = _transcoderService.serializeAttributes( session, attributes );
             final byte[] data = _transcoderService.serialize( session, attributesData );
             createBackupSessionTask( session, true ).doBackupSession( session, data, attributesData );
@@ -228,7 +227,7 @@ public class BackupSessionService {
                 _transcoderService,
                 _sessionBackupAsync,
                 _sessionBackupTimeout,
-                _memcached,
+                _storage,
                 _memcachedNodesManager,
                 _statistics );
     }
@@ -240,7 +239,7 @@ public class BackupSessionService {
                     _log.debug( "Releasing lock for session " + session.getIdInternal() );
                 }
                 final long start = System.currentTimeMillis();
-                _memcached.delete( _memcachedNodesManager.getSessionIdFormat().createLockName( session.getIdInternal() ) ).get();
+                _storage.delete( _memcachedNodesManager.getSessionIdFormat().createLockName( session.getIdInternal() ) ).get();
                 _statistics.registerSince( RELEASE_LOCK, start );
                 session.releaseLock();
             } catch( final Exception e ) {

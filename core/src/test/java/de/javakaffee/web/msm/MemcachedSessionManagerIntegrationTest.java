@@ -50,7 +50,7 @@ import org.testng.annotations.Test;
 
 import com.thimbleware.jmemcached.MemCacheDaemon;
 
-import de.javakaffee.web.msm.MemcachedNodesManager.MemcachedClientCallback;
+import de.javakaffee.web.msm.MemcachedNodesManager.StorageClientCallback;
 import de.javakaffee.web.msm.MemcachedSessionService.SessionManager;
 import de.javakaffee.web.msm.integration.TestServlet;
 import de.javakaffee.web.msm.integration.TestUtils;
@@ -58,6 +58,7 @@ import de.javakaffee.web.msm.integration.TestUtils.Predicates;
 import de.javakaffee.web.msm.integration.TestUtils.Response;
 import de.javakaffee.web.msm.integration.TestUtils.SessionAffinityMode;
 import de.javakaffee.web.msm.integration.TomcatBuilder;
+import de.javakaffee.web.msm.storage.MemcachedStorageClient.ByteArrayTranscoder;
 
 /**
  * Integration test testing basic session manager functionality.
@@ -85,10 +86,10 @@ public abstract class MemcachedSessionManagerIntegrationTest {
 
     private int _memcachedPort;
 
-    private final MemcachedClientCallback _memcachedClientCallback = new MemcachedClientCallback() {
+    private final StorageClientCallback _storageClientCallback = new StorageClientCallback() {
 		@Override
-		public Object get(final String key) {
-			return _memcached.get(key);
+		public byte[] get(final String key) {
+		    return _memcached.get(key, ByteArrayTranscoder.INSTANCE);
 		}
 	};
 
@@ -126,7 +127,7 @@ public abstract class MemcachedSessionManagerIntegrationTest {
     }
 
     private MemcachedClient createMemcachedClient( final String memcachedNodes, final InetSocketAddress address ) throws IOException, InterruptedException {
-        final MemcachedNodesManager nodesManager = MemcachedNodesManager.createFor(memcachedNodes, null, null, _memcachedClientCallback);
+        final MemcachedNodesManager nodesManager = MemcachedNodesManager.createFor(memcachedNodes, null, null, _storageClientCallback);
         final ConnectionFactory cf = nodesManager.isEncodeNodeIdInSessionId()
             ? new SuffixLocatorConnectionFactory( nodesManager, nodesManager.getSessionIdFormat(), Statistics.create(), 1000, 1000 )
             : new DefaultConnectionFactory();
@@ -275,7 +276,7 @@ public abstract class MemcachedSessionManagerIntegrationTest {
         manager.setSticky( sessionAffinity.isSticky() );
 
         try {
-            waitForReconnect(manager.getMemcachedSessionService().getMemcached(), 1, 500);
+            waitForReconnect(manager.getMemcachedSessionService().getStorageClient(), 1, 500);
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException(e);
@@ -368,7 +369,7 @@ public abstract class MemcachedSessionManagerIntegrationTest {
         setStickyness(stickyness);
 
         // set to 1 sec above (in setup), default is 10 seconds
-        final int delay = manager.getContainer().getBackgroundProcessorDelay();
+        final int delay = manager.getContext().getBackgroundProcessorDelay();
         manager.setMaxInactiveInterval( delay * 4 );
 
         final String sessionId1 = makeRequest( _httpClient, _portTomcat1, null );
@@ -411,7 +412,7 @@ public abstract class MemcachedSessionManagerIntegrationTest {
         setStickyness(stickyness);
 
         // set to 1 sec above (in setup), default is 10 seconds
-        final int delay = manager.getContainer().getBackgroundProcessorDelay();
+        final int delay = manager.getContext().getBackgroundProcessorDelay();
         manager.setMaxInactiveInterval( delay * 4 );
 
         final String sessionId1 = makeRequest( _httpClient, _portTomcat1, null );
@@ -470,7 +471,7 @@ public abstract class MemcachedSessionManagerIntegrationTest {
         _daemon.start();
 
         // Wait so that the daemon will be available and the client can reconnect (async get didn't do the trick)
-        waitForReconnect(manager.getMemcachedSessionService().getMemcached(), 1, 4000);
+        waitForReconnect(manager.getMemcachedSessionService().getStorageClient(), 1, 4000);
 
         final String newSessionId = manager.getMemcachedSessionService().changeSessionIdOnMemcachedFailover( session.getId() );
         assertNotNull( newSessionId );
@@ -551,7 +552,7 @@ public abstract class MemcachedSessionManagerIntegrationTest {
     private void waitForSessionExpiration(final boolean sticky) throws InterruptedException {
         final SessionManager manager = _tomcat1.getManager();
         assertEquals( manager.getMemcachedSessionService().isSticky(), sticky );
-        final Container container = manager.getContainer();
+        final Container container = manager.getContext();
         final long timeout = TimeUnit.SECONDS.toMillis(
                 sticky ? container.getBackgroundProcessorDelay() + manager.getMaxInactiveInterval()
                        : 2 * manager.getMaxInactiveInterval() ) + 1000;

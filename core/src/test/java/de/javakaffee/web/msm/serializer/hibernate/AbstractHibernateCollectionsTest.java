@@ -16,24 +16,12 @@
  */
 package de.javakaffee.web.msm.serializer.hibernate;
 
-import static de.javakaffee.web.msm.integration.TestUtils.createContext;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-
-import java.io.Serializable;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-
-import javax.annotation.Nonnull;
-import javax.persistence.CascadeType;
-import javax.persistence.Entity;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
-import javax.persistence.Id;
-import javax.persistence.OneToMany;
-
+import de.javakaffee.web.msm.MemcachedBackupSession;
+import de.javakaffee.web.msm.MemcachedSessionService;
+import de.javakaffee.web.msm.MemcachedSessionService.SessionManager;
+import de.javakaffee.web.msm.SessionAttributesTranscoder;
+import de.javakaffee.web.msm.TranscoderService;
+import de.javakaffee.web.msm.integration.TestUtils;
 import org.apache.catalina.core.StandardContext;
 import org.apache.juli.logging.Log;
 import org.apache.juli.logging.LogFactory;
@@ -43,19 +31,33 @@ import org.hibernate.HibernateException;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.Transaction;
-import org.hibernate.annotations.AccessType;
-import org.hibernate.cfg.AnnotationConfiguration;
+import org.hibernate.annotations.AttributeAccessor;
+import org.hibernate.boot.registry.StandardServiceRegistry;
+import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
+import org.hibernate.cfg.Configuration;
 import org.hibernate.criterion.Restrictions;
 import org.testng.Assert;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
 
-import de.javakaffee.web.msm.MemcachedBackupSession;
-import de.javakaffee.web.msm.MemcachedSessionService;
-import de.javakaffee.web.msm.MemcachedSessionService.SessionManager;
-import de.javakaffee.web.msm.SessionAttributesTranscoder;
-import de.javakaffee.web.msm.TranscoderService;
-import de.javakaffee.web.msm.integration.TestUtils;
+import javax.annotation.Nonnull;
+import javax.persistence.CascadeType;
+import javax.persistence.Entity;
+import javax.persistence.GeneratedValue;
+import javax.persistence.GenerationType;
+import javax.persistence.Id;
+import javax.persistence.OneToMany;
+import java.io.Serializable;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import static de.javakaffee.web.msm.integration.TestUtils.createContext;
+import static org.mockito.Matchers.anyObject;
+import static org.mockito.Matchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Test for serialization/deserialization of hibernate collection mappings.
@@ -70,17 +72,20 @@ public abstract class AbstractHibernateCollectionsTest {
 
     @BeforeTest
     protected void beforeTest() {
-        _sessionFactory = new AnnotationConfiguration()
-            .addAnnotatedClass( Person.class )
-            .addAnnotatedClass( Animal.class )
-            .configure().buildSessionFactory();
+        Configuration configuration = new Configuration()
+                .addAnnotatedClass(Person.class)
+                .addAnnotatedClass(Animal.class)
+                .configure();
+        StandardServiceRegistry serviceRegistry = new StandardServiceRegistryBuilder()
+                .applySettings( configuration.getProperties() )
+                .build();
+        _sessionFactory = configuration.buildSessionFactory(serviceRegistry);
     }
 
     @Test( enabled = true )
     public void testDeserializeHibernateCollection() {
 
         final SessionManager manager = createSessionManager();
-        manager.setContainer( createContext() );
 
         final Set<Animal> animals = new HashSet<Animal>( Arrays.asList( new Animal( "cat" ) ) );
         final Person person = new Person( "foo bar", animals );
@@ -137,8 +142,8 @@ public abstract class AbstractHibernateCollectionsTest {
         return personId;
     }
 
-    @Entity
-    @AccessType( "field" )
+    @Entity(name = "persons")
+    @AttributeAccessor("field")
     @SuppressWarnings( "serial" )
     static class Person implements Serializable {
 
@@ -164,8 +169,8 @@ public abstract class AbstractHibernateCollectionsTest {
 
     }
 
-    @Entity
-    @AccessType( "field" )
+    @Entity(name = "animals")
+    @AttributeAccessor( "field" )
     @SuppressWarnings( "serial" )
     static class Animal implements Serializable {
 
@@ -214,9 +219,12 @@ public abstract class AbstractHibernateCollectionsTest {
     @Nonnull
     protected SessionManager createSessionManager() {
         final SessionManager manager = mock( SessionManager.class );
-        when( manager.getContainer() ).thenReturn( new StandardContext() ); // needed for createSession
+        final StandardContext context = createContext();
+        when( manager.getContext() ).thenReturn(context); // needed for createSession
+        when( manager.getContainer() ).thenReturn(context); // needed for createSession
         when( manager.getMemcachedSessionService() ).thenReturn(newMemcachedSessionService(manager));
         when( manager.newMemcachedBackupSession() ).thenReturn( new MemcachedBackupSession( manager ) );
+        when( manager.willAttributeDistribute(anyString(), anyObject())).thenReturn(true);
         return manager;
     }
 

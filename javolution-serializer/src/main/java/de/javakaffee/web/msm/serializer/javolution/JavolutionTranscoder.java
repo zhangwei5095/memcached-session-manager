@@ -19,12 +19,15 @@ package de.javakaffee.web.msm.serializer.javolution;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
 
+import de.javakaffee.web.msm.MemcachedSessionService.SessionManager;
 import javolution.xml.XMLObjectReader;
 import javolution.xml.XMLObjectWriter;
 import javolution.xml.XMLReferenceResolver;
 import javolution.xml.stream.XMLStreamException;
 
+import org.apache.catalina.Context;
 import org.apache.catalina.Loader;
 import org.apache.catalina.Manager;
 import org.apache.juli.logging.Log;
@@ -57,7 +60,7 @@ public class JavolutionTranscoder implements SessionAttributesTranscoder {
 
     private static final Log LOG = LogFactory.getLog( JavolutionTranscoder.class );
 
-    private final Manager _manager;
+    private final SessionManager _manager;
     private final ReflectionBinding _xmlBinding;
 
     /**
@@ -66,7 +69,7 @@ public class JavolutionTranscoder implements SessionAttributesTranscoder {
      * @param manager
      *            the manager
      */
-    public JavolutionTranscoder( final Manager manager ) {
+    public JavolutionTranscoder( final SessionManager manager ) {
         this( manager, false );
     }
 
@@ -80,10 +83,10 @@ public class JavolutionTranscoder implements SessionAttributesTranscoder {
      *            on a copy of the collection or on the collection itself
      * @param customFormats a list of {@link CustomXMLFormat}s or <code>null</code>.
      */
-    public JavolutionTranscoder( final Manager manager, final boolean copyCollectionsForSerialization,
-            final CustomXMLFormat<?> ... customFormats ) {
+    public JavolutionTranscoder(final SessionManager manager, final boolean copyCollectionsForSerialization,
+                                final CustomXMLFormat<?> ... customFormats ) {
         _manager = manager;
-        final Loader loader = _manager.getContainer().getLoader();
+        final Loader loader = _manager.getContext().getLoader();
         _xmlBinding = new ReflectionBinding( loader.getClassLoader(), copyCollectionsForSerialization, customFormats );
     }
 
@@ -107,7 +110,7 @@ public class JavolutionTranscoder implements SessionAttributesTranscoder {
      * {@inheritDoc}
      */
     @Override
-    public byte[] serializeAttributes( final MemcachedBackupSession session, final Map<String, Object> attributes ) {
+    public byte[] serializeAttributes( final MemcachedBackupSession session, final ConcurrentMap<String, Object> attributes ) {
         return doSerialize( attributes, "attributes" );
     }
 
@@ -149,7 +152,7 @@ public class JavolutionTranscoder implements SessionAttributesTranscoder {
      * @return the resulting object
      */
     @Override
-    public Map<String, Object> deserializeAttributes( final byte[] in ) {
+    public ConcurrentMap<String, Object> deserializeAttributes(final byte[] in ) {
 
         if ( LOG.isDebugEnabled() ) {
             LOG.debug( "Reading serialized data:\n" + new String( in ) );
